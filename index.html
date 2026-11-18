@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Círculos menores na rede de Wulff</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#1a1a1a;--muted:#666;--line:#c8c8c8;--accent:#1f5fa8;--danger:#b33;--panel:#f4f5f7}
+@media (prefers-color-scheme: dark){:root{--bg:#1b1d21;--fg:#eee;--muted:#aaa;--line:#4a4f57;--accent:#6aa7ea;--danger:#e77;--panel:#25282e}}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--fg);margin:0;padding:16px;max-width:1100px;margin-left:auto;margin-right:auto}
+h1{font-size:1.3rem;margin:0 0 12px}
+h2{font-size:1.05rem;margin:22px 0 8px}
+.grid{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}
+#netwrap{flex:1 1 420px;max-width:540px}
+svg{width:100%;height:auto;color:var(--fg);display:block}
+.painel{flex:1 1 280px;max-width:380px;display:flex;flex-direction:column;gap:12px}
+fieldset{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--panel);margin:0}
+legend{padding:0 6px;font-weight:600;font-size:.9rem}
+label{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:6px 0;font-size:.92rem}
+input[type=number]{width:110px;padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+button{padding:7px 12px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;cursor:pointer;font-size:.9rem}
+button.sec{background:transparent;color:var(--accent)}
+button.perigo{background:transparent;color:var(--danger);border-color:var(--danger)}
+.botoes{display:flex;gap:8px}
+.nota{font-size:.8rem;color:var(--muted);margin:6px 0 0}
+#msg{font-size:.88rem;color:var(--danger);min-height:1.2em}
+table{border-collapse:collapse;font-size:.9rem;min-width:280px}
+th,td{border:1px solid var(--line);padding:4px 10px;text-align:center}
+th{background:var(--panel)}
+.sw{display:inline-block;width:16px;height:16px;border-radius:3px;vertical-align:middle}
+.vazio{color:var(--muted);font-size:.9rem}
+.leg{display:flex;flex-wrap:wrap;gap:12px;font-size:.8rem;color:var(--muted);margin-top:6px}
+</style>
+</head>
+<body>
+<h1>Círculos menores — rede de Wulff (hemisfério inferior)</h1>
+
+<div class="grid">
+  <div id="netwrap">
+    <svg id="net" viewBox="0 0 540 540" aria-label="Rede de Wulff"></svg>
+    <div class="leg">
+      <span>── linha contínua: hemisfério inferior</span>
+      <span>- - linha descontínua: hemisfério superior</span>
+      <span>● linha (azimute / inclinação)</span>
+    </div>
+    <p class="nota">Projeção equiangular (Wulff). O hemisfério superior é representado pelo seu antípoda no hemisfério inferior. Cada linha e o respetivo círculo menor têm a mesma cor.</p>
+  </div>
+
+  <div class="painel">
+    <fieldset>
+      <legend>Linha e círculo menor</legend>
+      <label>Azimute da linha (0–360°) <input id="lAz" type="number" min="0" max="360" step="any"></label>
+      <label>Inclinação da linha (0–90°) <input id="lIn" type="number" min="0" max="90" step="any"></label>
+      <label>Ângulo em relação à linha (0–90°) <input id="lAng" type="number" min="0" max="90" step="any"></label>
+      <button onclick="addCirculo()">Adicionar</button>
+    </fieldset>
+
+    <div class="botoes">
+      <button class="sec" onclick="undo()">Desfazer</button>
+      <button class="perigo" onclick="limpar()">Limpar</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+</div>
+
+<h2>Dados</h2>
+<div id="tDados"></div>
+
+<script>
+const R = 250, C = 270;
+const PALETTE = ['#e6194b','#3cb44b','#4363d8','#f58231','#911eb4','#42d4f4','#f032e6','#9a6324','#808000','#000075','#469990','#bfef45'];
+const state = { items: [] }; // {id, a: azimute, b: inclinação, c: ângulo, color}
+
+/* ---------- utilidades vetoriais (vetor = [Norte, Este, Baixo]) ---------- */
+const rad = d => d * Math.PI / 180;
+const deg = r => r * 180 / Math.PI;
+const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const norm = v => { const L = Math.hypot(v[0], v[1], v[2]); return v.map(x => x / L); };
+
+function fromTL(t, p) {
+  const T = rad(t), P = rad(p);
+  return [Math.cos(P)*Math.cos(T), Math.cos(P)*Math.sin(T), Math.sin(P)];
+}
+
+/* ---------- projeção Wulff ---------- */
+function projRaw(v) { // assume d >= 0
+  const [n, e, d0] = norm(v);
+  const d = Math.max(-1, Math.min(1, d0));
+  const p = Math.asin(d);
+  const r = R * Math.tan((Math.PI/2 - p) / 2);
+  const t = Math.atan2(e, n);
+  return { x: C + r * Math.sin(t), y: C - r * Math.cos(t) };
+}
+function projPoint(v) {
+  let w = norm(v);
+  if (w[2] < 0) w = w.map(x => -x);
+  return projRaw(w);
+}
+
+function polylines(runs, attrs) {
+  return runs.filter(r => r.length > 1)
+    .map(r => `<polyline points="${r.map(p => p.x.toFixed(2)+','+p.y.toFixed(2)).join(' ')}" fill="none" ${attrs}/>`)
+    .join('');
+}
+
+/* ---------- grelha da rede (igual à anterior) ---------- */
+const GRID = (() => {
+  let s = '';
+  // círculos máximos: planos que contêm o eixo N-S
+  for (let psi = 0; psi < 180; psi += 10) {
+    const nn = fromTL(90, psi), ref = Math.abs(nn[2]) < 0.9 ? [0,0,1] : [1,0,0];
+    const u = norm(cross(nn, ref)), w = cross(nn, u);
+    const pts = [];
+    for (let i = 0; i <= 180; i++) {
+      const th = 2*Math.PI*i/180;
+      pts.push([0,1,2].map(k => Math.cos(th)*u[k] + Math.sin(th)*w[k]));
+    }
+    s += polylines(hemiRuns(pts).solid, 'stroke="#9aa3ad" stroke-width="0.6"');
+  }
+  // pequenos círculos em torno do eixo N-S
+  for (let c = 10; c < 180; c += 10) {
+    const pts = [], cc = rad(c);
+    for (let i = 0; i <= 180; i++) {
+      const th = 2*Math.PI*i/180;
+      pts.push([Math.cos(cc), Math.sin(cc)*Math.cos(th), Math.sin(cc)*Math.sin(th)]);
+    }
+    s += polylines(hemiRuns(pts).solid, 'stroke="#9aa3ad" stroke-width="0.6"');
+  }
+  return s;
+})();
+
+/* ---------- círculo menor: cone de semi-ângulo alpha em torno da linha n ---------- */
+function conePts(n, alpha, steps = 360) {
+  const nn = norm(n);
+  const ref = Math.abs(nn[2]) < 0.9 ? [0,0,1] : [1,0,0];
+  const u = norm(cross(nn, ref));
+  const w = cross(nn, u);
+  const ca = Math.cos(rad(alpha)), sa = Math.sin(rad(alpha));
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const th = 2*Math.PI*i/steps;
+    pts.push([0,1,2].map(k => ca*nn[k] + sa*(Math.cos(th)*u[k] + Math.sin(th)*w[k])));
+  }
+  return pts;
+}
+
+/* separa arcos do hemisfério inferior (solid) e superior (dashed, pelo antípoda) */
+function hemiRuns(pts) {
+  const solid = [], dashed = [];
+  let cur = [], type = null;
+  const flush = () => { if (cur.length > 1) (type === 's' ? solid : dashed).push(cur); };
+  for (const v of pts) {
+    const t = v[2] >= 0 ? 's' : 'd';
+    const w = t === 's' ? v : v.map(x => -x);
+    if (t !== type) { flush(); cur = []; type = t; }
+    cur.push(projRaw(w));
+  }
+  flush();
+  return { solid, dashed };
+}
+
+/* ---------- ações ---------- */
+const valid = (x, lo, hi) => !isNaN(x) && x >= lo && x <= hi;
+function msg(t) { document.getElementById('msg').textContent = t || ''; }
+
+function addCirculo() {
+  const a = parseFloat(lAz.value), b = parseFloat(lIn.value), c = parseFloat(lAng.value);
+  if (!valid(a, 0, 360) || !valid(b, 0, 90) || !valid(c, 0, 90))
+    return msg('Azimute 0–360°, inclinação 0–90° e ângulo 0–90°.');
+  const id = state.items.length + 1;
+  state.items.push({ id, a, b, c, color: PALETTE[(id - 1) % PALETTE.length] });
+  lAz.value = ''; lIn.value = ''; lAng.value = ''; msg(''); refresh();
+}
+function undo() { state.items.pop(); msg(''); refresh(); }
+function limpar() { state.items = []; msg(''); refresh(); }
+
+/* ---------- desenho ---------- */
+function render() {
+  let s = GRID;
+  s += `<circle cx="${C}" cy="${C}" r="${R}" fill="none" stroke="currentColor" stroke-width="1.6"/>`;
+  s += `<text x="${C}" y="${C-R-8}" text-anchor="middle" font-size="13" fill="currentColor">N</text>`;
+  s += `<text x="${C+R+8}" y="${C+4}" font-size="13" fill="currentColor">E</text>`;
+  s += `<text x="${C}" y="${C+R+18}" text-anchor="middle" font-size="13" fill="currentColor">S</text>`;
+  s += `<text x="${C-R-14}" y="${C+4}" font-size="13" fill="currentColor">W</text>`;
+
+  for (const it of state.items) {
+    const n = fromTL(it.a, it.b);
+    const { solid, dashed } = hemiRuns(conePts(n, it.c));
+    s += polylines(solid, `stroke="${it.color}" stroke-width="2"`);
+    s += polylines(dashed, `stroke="${it.color}" stroke-width="2" stroke-dasharray="6 4"`);
+
+    const first = (solid[0] && solid[0][0]) || (dashed[0] && dashed[0][0]);
+    if (first) s += `<text x="${first.x+5}" y="${first.y-5}" font-size="12" fill="${it.color}">${it.id}</text>`;
+
+    const q = projPoint(n);
+    s += `<circle cx="${q.x}" cy="${q.y}" r="4.5" fill="${it.color}"/>`;
+    s += `<text x="${q.x+6}" y="${q.y+12}" font-size="12" fill="${it.color}">${it.id}</text>`;
+  }
+
+  document.getElementById('net').innerHTML = s;
+  renderTable();
+}
+
+function renderTable() {
+  const el = document.getElementById('tDados');
+  if (!state.items.length) { el.innerHTML = `<p class="vazio">Sem dados.</p>`; return; }
+  el.innerHTML = `<table><tr><th>Nº</th><th>Cor</th><th>Azimute da linha (°)</th><th>Inclinação da linha (°)</th><th>Ângulo (°)</th></tr>` +
+    state.items.map(it => `<tr><td>${it.id}</td><td><span class="sw" style="background:${it.color}"></span></td><td>${it.a.toFixed(1)}</td><td>${it.b.toFixed(1)}</td><td>${it.c.toFixed(1)}</td></tr>`).join('') +
+    `</table>`;
+}
+
+function refresh() { render(); }
+refresh();
+</script>
+</body>
+</html>
