@@ -13,12 +13,13 @@ h1{font-size:1.3rem;margin:0 0 12px}
 h2{font-size:1.05rem;margin:22px 0 8px}
 .grid{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}
 #netwrap{flex:1 1 420px;max-width:540px}
-svg{width:100%;height:auto;color:var(--fg);display:block}
+svg{width:100%;height:auto;color:var(--fg);display:block;cursor:crosshair;touch-action:manipulation}
 .painel{flex:1 1 280px;max-width:380px;display:flex;flex-direction:column;gap:12px}
 fieldset{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--panel);margin:0}
 legend{padding:0 6px;font-weight:600;font-size:.9rem}
 label{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:6px 0;font-size:.92rem}
-input[type=number]{width:110px;padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+input[type=number],input[type=text]{width:110px;padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+input[type=text]{width:130px}
 button{padding:7px 12px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;cursor:pointer;font-size:.9rem}
 button.sec{background:transparent;color:var(--accent)}
 button.perigo{background:transparent;color:var(--danger);border-color:var(--danger)}
@@ -42,18 +43,25 @@ th{background:var(--panel)}
     <div class="leg">
       <span>── linha contínua: hemisfério inferior</span>
       <span>- - linha descontínua: hemisfério superior</span>
-      <span>● linha (azimute / inclinação)</span>
+      <span>● linha do círculo</span>
+      <span>◆ ponto</span>
     </div>
-    <p class="nota">Projeção equiangular (Wulff). O hemisfério superior é representado pelo seu antípoda no hemisfério inferior. Cada linha e o respetivo círculo menor têm a mesma cor.</p>
+    <p class="nota">Projeção equiangular (Wulff). O hemisfério superior é representado pelo seu antípoda no hemisfério inferior. Toque na rede para marcar um ponto.</p>
   </div>
 
   <div class="painel">
     <fieldset>
-      <legend>Linha e círculo menor</legend>
+      <legend>Círculo menor</legend>
       <label>Azimute da linha (0–360°) <input id="lAz" type="number" min="0" max="360" step="any"></label>
       <label>Inclinação da linha (0–90°) <input id="lIn" type="number" min="0" max="90" step="any"></label>
       <label>Ângulo em relação à linha (0–90°) <input id="lAng" type="number" min="0" max="90" step="any"></label>
-      <button onclick="addCirculo()">Adicionar</button>
+      <button onclick="addCirculo()">Adicionar círculo</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Interseção de 3 círculos</legend>
+      <label>Nº dos círculos (ex.: 1 2 3) <input id="intIds" type="text" placeholder="1 2 3"></label>
+      <button onclick="addIntersecao()">Calcular interseção</button>
     </fieldset>
 
     <div class="botoes">
@@ -64,23 +72,32 @@ th{background:var(--panel)}
   </div>
 </div>
 
-<h2>Dados</h2>
-<div id="tDados"></div>
+<h2>Círculos menores</h2>
+<div id="tCirculos"></div>
+
+<h2>Pontos</h2>
+<div id="tPontos"></div>
 
 <script>
 const R = 250, C = 270;
 const PALETTE = ['#e6194b','#3cb44b','#4363d8','#f58231','#911eb4','#42d4f4','#f032e6','#9a6324','#808000','#000075','#469990','#bfef45'];
-const state = { items: [] }; // {id, a: azimute, b: inclinação, c: ângulo, color}
+const state = { items: [] }; // {id, tipo:'circulo'|'ponto', ...}
 
 /* ---------- utilidades vetoriais (vetor = [Norte, Este, Baixo]) ---------- */
 const rad = d => d * Math.PI / 180;
 const deg = r => r * 180 / Math.PI;
 const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
 const norm = v => { const L = Math.hypot(v[0], v[1], v[2]); return v.map(x => x / L); };
 
 function fromTL(t, p) {
   const T = rad(t), P = rad(p);
   return [Math.cos(P)*Math.cos(T), Math.cos(P)*Math.sin(T), Math.sin(P)];
+}
+function toTL(v) { // sempre hemisfério inferior
+  let [n, e, d] = norm(v);
+  if (d < 0) { n = -n; e = -e; d = -d; }
+  return [(deg(Math.atan2(e, n)) + 360) % 360, deg(Math.asin(Math.min(1, d)))];
 }
 
 /* ---------- projeção Wulff ---------- */
@@ -104,11 +121,25 @@ function polylines(runs, attrs) {
     .join('');
 }
 
-/* ---------- grelha da rede (igual à anterior) ---------- */
+/* separa arcos do hemisfério inferior (solid) e superior (dashed, pelo antípoda) */
+function hemiRuns(pts) {
+  const solid = [], dashed = [];
+  let cur = [], type = null;
+  const flush = () => { if (cur.length > 1) (type === 's' ? solid : dashed).push(cur); };
+  for (const v of pts) {
+    const t = v[2] >= 0 ? 's' : 'd';
+    const w = t === 's' ? v : v.map(x => -x);
+    if (t !== type) { flush(); cur = []; type = t; }
+    cur.push(projRaw(w));
+  }
+  flush();
+  return { solid, dashed };
+}
+
+/* ---------- grelha da rede ---------- */
 const GRID = (() => {
   let s = '';
-  // círculos máximos: planos que contêm o eixo N-S
-  for (let psi = 0; psi < 180; psi += 10) {
+  for (let psi = 0; psi < 180; psi += 10) { // círculos máximos (passam por N e S)
     const nn = fromTL(90, psi), ref = Math.abs(nn[2]) < 0.9 ? [0,0,1] : [1,0,0];
     const u = norm(cross(nn, ref)), w = cross(nn, u);
     const pts = [];
@@ -118,8 +149,7 @@ const GRID = (() => {
     }
     s += polylines(hemiRuns(pts).solid, 'stroke="#9aa3ad" stroke-width="0.6"');
   }
-  // pequenos círculos em torno do eixo N-S
-  for (let c = 10; c < 180; c += 10) {
+  for (let c = 10; c < 180; c += 10) { // pequenos círculos em torno do eixo N-S
     const pts = [], cc = rad(c);
     for (let i = 0; i <= 180; i++) {
       const th = 2*Math.PI*i/180;
@@ -145,19 +175,34 @@ function conePts(n, alpha, steps = 360) {
   return pts;
 }
 
-/* separa arcos do hemisfério inferior (solid) e superior (dashed, pelo antípoda) */
-function hemiRuns(pts) {
-  const solid = [], dashed = [];
-  let cur = [], type = null;
-  const flush = () => { if (cur.length > 1) (type === 's' ? solid : dashed).push(cur); };
-  for (const v of pts) {
-    const t = v[2] >= 0 ? 's' : 'd';
-    const w = t === 's' ? v : v.map(x => -x);
-    if (t !== type) { flush(); cur = []; type = t; }
-    cur.push(projRaw(w));
-  }
-  flush();
-  return { solid, dashed };
+/* ---------- interseção de 3 círculos menores ---------- */
+function intersectaTres(ids) {
+  const cs = ids.map(id => state.items.find(i => i.id === id && i.tipo === 'circulo'));
+  if (cs.some(c => !c)) return { erro: 'Algum dos números não corresponde a um círculo menor.' };
+  const [A, B, Cc] = cs;
+  const na = fromTL(A.a, A.b), nb = fromTL(B.a, B.b), nc = fromTL(Cc.a, Cc.b);
+  const ca = Math.cos(rad(A.c)), cb = Math.cos(rad(B.c)), cc = Math.cos(rad(Cc.c));
+  // Dois primeiros círculos: x·na = ca, x·nb = cb, |x| = 1
+  const d = cross(na, nb);
+  const dd = dot(d, d);
+  if (dd < 1e-10) return { erro: 'Os dois primeiros círculos são coincidentes ou paralelos.' };
+  const t1 = cross(nb, d), t2 = cross(d, na);
+  const x0 = [0,1,2].map(k => (ca*t1[k] + cb*t2[k]) / dd);
+  const disc = (1 - dot(x0, x0)) / dd;
+  if (disc < 0) return { erro: 'Os dois primeiros círculos não se intersetam.' };
+  const s = Math.sqrt(disc);
+  const cands = [1, -1].map(sg => [0,1,2].map(k => x0[k] + sg*s*d[k]));
+  // escolhe o candidato que melhor satisfaz o terceiro círculo
+  const resid = v => Math.abs(deg(Math.acos(Math.max(-1, Math.min(1, dot(v, nc))))) - Cc.c);
+  const best = cands.reduce((m, v) => resid(v) < resid(m) ? v : m);
+  // resíduo máximo nos três círculos (em graus)
+  const res = Math.max(
+    Math.abs(deg(Math.acos(Math.max(-1, Math.min(1, dot(best, na))))) - A.c),
+    Math.abs(deg(Math.acos(Math.max(-1, Math.min(1, dot(best, nb))))) - B.c),
+    resid(best)
+  );
+  const [a, b] = toTL(best);
+  return { a, b, res };
 }
 
 /* ---------- ações ---------- */
@@ -169,11 +214,41 @@ function addCirculo() {
   if (!valid(a, 0, 360) || !valid(b, 0, 90) || !valid(c, 0, 90))
     return msg('Azimute 0–360°, inclinação 0–90° e ângulo 0–90°.');
   const id = state.items.length + 1;
-  state.items.push({ id, a, b, c, color: PALETTE[(id - 1) % PALETTE.length] });
+  const nCirc = state.items.filter(i => i.tipo === 'circulo').length;
+  state.items.push({ id, tipo: 'circulo', a, b, c, color: PALETTE[nCirc % PALETTE.length] });
   lAz.value = ''; lIn.value = ''; lAng.value = ''; msg(''); refresh();
 }
+
+function addIntersecao() {
+  const ids = (intIds.value.match(/\d+/g) || []).map(Number);
+  if (ids.length !== 3) return msg('Indique três números de círculos, por exemplo 1 2 3.');
+  if (new Set(ids).size !== 3) return msg('Os três números têm de ser diferentes.');
+  const r = intersectaTres(ids);
+  if (r.erro) return msg(r.erro);
+  const id = state.items.length + 1;
+  state.items.push({ id, tipo: 'ponto', a: r.a, b: r.b, origem: 'interseção ' + ids.join(', ') });
+  intIds.value = '';
+  msg(r.res > 0.5 ? `Atenção: os círculos não se cruzam exatamente num ponto (resíduo máx. ${r.res.toFixed(2)}°).` : '');
+  refresh();
+}
+
 function undo() { state.items.pop(); msg(''); refresh(); }
 function limpar() { state.items = []; msg(''); refresh(); }
+
+/* toque/clique na rede: marca um ponto (projeção inversa Wulff) */
+document.getElementById('net').addEventListener('click', e => {
+  const svgEl = document.getElementById('net');
+  const rect = svgEl.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * 540 / rect.width;
+  const y = (e.clientY - rect.top) * 540 / rect.height;
+  const ex = x - C, ny = C - y, r = Math.hypot(ex, ny);
+  if (r > R + 1) return msg('Toque dentro da rede.');
+  const t = (deg(Math.atan2(ex, ny)) + 360) % 360;
+  const p = 90 - 2 * deg(Math.atan(Math.min(r, R) / R));
+  const id = state.items.length + 1;
+  state.items.push({ id, tipo: 'ponto', a: t, b: p, origem: 'toque' });
+  msg(''); refresh();
+});
 
 /* ---------- desenho ---------- */
 function render() {
@@ -185,29 +260,38 @@ function render() {
   s += `<text x="${C-R-14}" y="${C+4}" font-size="13" fill="currentColor">W</text>`;
 
   for (const it of state.items) {
-    const n = fromTL(it.a, it.b);
-    const { solid, dashed } = hemiRuns(conePts(n, it.c));
-    s += polylines(solid, `stroke="${it.color}" stroke-width="2"`);
-    s += polylines(dashed, `stroke="${it.color}" stroke-width="2" stroke-dasharray="6 4"`);
-
-    const first = (solid[0] && solid[0][0]) || (dashed[0] && dashed[0][0]);
-    if (first) s += `<text x="${first.x+5}" y="${first.y-5}" font-size="12" fill="${it.color}">${it.id}</text>`;
-
-    const q = projPoint(n);
-    s += `<circle cx="${q.x}" cy="${q.y}" r="4.5" fill="${it.color}"/>`;
-    s += `<text x="${q.x+6}" y="${q.y+12}" font-size="12" fill="${it.color}">${it.id}</text>`;
+    if (it.tipo === 'circulo') {
+      const n = fromTL(it.a, it.b);
+      const { solid, dashed } = hemiRuns(conePts(n, it.c));
+      s += polylines(solid, `stroke="${it.color}" stroke-width="2"`);
+      s += polylines(dashed, `stroke="${it.color}" stroke-width="2" stroke-dasharray="6 4"`);
+      const first = (solid[0] && solid[0][0]) || (dashed[0] && dashed[0][0]);
+      if (first) s += `<text x="${first.x+5}" y="${first.y-5}" font-size="12" fill="${it.color}">${it.id}</text>`;
+      const q = projPoint(n);
+      s += `<circle cx="${q.x}" cy="${q.y}" r="4.5" fill="${it.color}"/>`;
+      s += `<text x="${q.x+6}" y="${q.y+12}" font-size="12" fill="${it.color}">${it.id}</text>`;
+    } else {
+      const q = projPoint(fromTL(it.a, it.b));
+      s += `<polygon points="${q.x},${q.y-6} ${q.x+6},${q.y} ${q.x},${q.y+6} ${q.x-6},${q.y}" fill="currentColor"/>`;
+      s += `<text x="${q.x+8}" y="${q.y-6}" font-size="12" fill="currentColor">${it.id}</text>`;
+    }
   }
 
   document.getElementById('net').innerHTML = s;
-  renderTable();
+  renderTables();
 }
 
-function renderTable() {
-  const el = document.getElementById('tDados');
-  if (!state.items.length) { el.innerHTML = `<p class="vazio">Sem dados.</p>`; return; }
-  el.innerHTML = `<table><tr><th>Nº</th><th>Cor</th><th>Azimute da linha (°)</th><th>Inclinação da linha (°)</th><th>Ângulo (°)</th></tr>` +
-    state.items.map(it => `<tr><td>${it.id}</td><td><span class="sw" style="background:${it.color}"></span></td><td>${it.a.toFixed(1)}</td><td>${it.b.toFixed(1)}</td><td>${it.c.toFixed(1)}</td></tr>`).join('') +
-    `</table>`;
+function renderTables() {
+  const circ = state.items.filter(i => i.tipo === 'circulo');
+  const pts = state.items.filter(i => i.tipo === 'ponto');
+  document.getElementById('tCirculos').innerHTML = circ.length
+    ? `<table><tr><th>Nº</th><th>Cor</th><th>Azimute da linha (°)</th><th>Inclinação da linha (°)</th><th>Ângulo (°)</th></tr>` +
+      circ.map(it => `<tr><td>${it.id}</td><td><span class="sw" style="background:${it.color}"></span></td><td>${it.a.toFixed(1)}</td><td>${it.b.toFixed(1)}</td><td>${it.c.toFixed(1)}</td></tr>`).join('') + `</table>`
+    : `<p class="vazio">Sem círculos.</p>`;
+  document.getElementById('tPontos').innerHTML = pts.length
+    ? `<table><tr><th>Nº</th><th>Azimute (°)</th><th>Inclinação (°)</th><th>Origem</th></tr>` +
+      pts.map(it => `<tr><td>${it.id}</td><td>${it.a.toFixed(1)}</td><td>${it.b.toFixed(1)}</td><td>${it.origem}</td></tr>`).join('') + `</table>`
+    : `<p class="vazio">Sem pontos.</p>`;
 }
 
 function refresh() { render(); }
